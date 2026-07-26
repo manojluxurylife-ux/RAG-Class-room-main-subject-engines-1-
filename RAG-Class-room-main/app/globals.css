@@ -1,0 +1,57 @@
+@import url('https://fonts.googleapis.com/css2?family=Baloo+2:wght@500;600;700;800&family=Nunito:wght@400;600;700;800&display=swap');
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --font-body: 'Nunito', sans-serif;
+  --font-display: 'Baloo 2', sans-serif;
+}
+
+body {
+  background: radial-gradient(ellipse at top, #1B3226 0%, #0F1F16 55%, #0B160F 100%);
+  color: #fdf6ec;
+  min-height: 100vh;
+}
+
+::selection { background: #e8a33d; color: #16241d; }
+
+/* ── Floating hardware dock — positioning copied from the reference app
+   (Nexus Justice) inline <style>. One difference, deliberate: the
+   reference offsets the dock left by 88px on sm+ screens to compensate
+   for its fixed left sidebar; this app's layout is a centered column
+   with no sidebar, so the dock stays truly centered at all widths. ── */
+.hardware-dock-center {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+}
+@media (min-width: 768px) {
+  .hardware-dock-center {
+    bottom: 40px;
+  }
+}
+
+/* Thin indigo scrollbar inside the pane's transcription boxes (reference) */
+.custom-scrollbar::-webkit-scrollbar { width: 5px; }
+.custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+.custom-scrollbar::-webkit-scrollbar-thumb { background: #312e81; border-radius: 10px; }
+
+/* AI Guru Final Layout: on classroom-width screens the draggable camera/mic
+   starts below the AI Teacher Notes pane. A student drag overrides this. */
+@media (min-width: 1280px) {
+  .hardware-dock-center { left: 49%; bottom: 28px; }
+}
+
+/* Creation actions must remain visually discoverable while a PDF is being
+   indexed. They stay disabled until indexing finishes, but never fade into
+   the dark Material Studio panel. */
+button.bg-amber:disabled {
+  opacity: 0.88 !important;
+  background-color: #f6b51b !important;
+  color: #10261c !important;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  box-shadow: 0 0 0 3px rgba(246, 181, 27, 0.14);
+  cursor: wait;
+}

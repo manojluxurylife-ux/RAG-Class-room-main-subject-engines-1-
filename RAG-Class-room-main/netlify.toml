@@ -1,0 +1,33 @@
+# Fixes a real, confirmed build failure: "JavaScript heap out of memory"
+# during `next build` on Netlify. This app has grown substantial enough
+# (90 routes, confirmed by counting the actual build output — not a
+# rough guess — plus heavy dependencies: pptxgenjs, mermaid, three.js,
+# wllama types, katex, @google/genai, googleapis, firebase-admin) that
+# Node's default heap limit isn't enough to complete a production build.
+#
+# This isn't a new discovery — every build command run locally in this
+# project's development sandbox has used
+# `NODE_OPTIONS="--max-old-space-size=3072"` since early in the build,
+# specifically because of this same memory pressure. That fix just never
+# made it into the actual deployment config until now, which is why
+# Netlify's build (running with Node's untouched default limit) failed
+# while local builds succeeded.
+#
+# Deliberately ONLY setting the environment variable here — NOT a
+# [build] command or publish directory. This project has deployed
+# successfully on Netlify this whole time via its zero-config Next.js
+# auto-detection (the official Next.js Runtime, which needs to wrap the
+# build for SSR/API routes, not just publish a static folder). Manually
+# declaring `publish = ".next"` — as a generic OOM fix would suggest —
+# would fight that auto-detection and risk breaking every API route and
+# server-rendered page in this app, trading one real bug for a worse one.
+#
+# 4096 (not a higher number like 8192): every build command run in this
+# project's own development sandbox has succeeded consistently with
+# --max-old-space-size=3072, even as the app grew to 60+ routes — 4096
+# is a full extra 1GB above what's actually proven sufficient, not an
+# untested guess. Going much higher risks a different failure if it
+# exceeds Netlify's real build container memory ceiling, rather than
+# fixing the original one.
+[build.environment]
+  NODE_OPTIONS = "--max-old-space-size=4096"

@@ -1,0 +1,51 @@
+{
+  "name": "ai-guru-final-layout",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev -p 3000 -H 0.0.0.0",
+    "prebuild": "node scripts/stamp-sw-version.js",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "postinstall": "node scripts/copy-pdf-worker.js",
+    "test:whiteboard": "node --experimental-strip-types --test tests/whiteboard.test.ts",
+    "test:browser-whiteboard": "node tests/browser-whiteboard.mjs"
+  },
+  "dependencies": {
+    "@google/genai": "^2.10.0",
+    "@nodelib/fs.stat": "^4.0.0",
+    "@svg-maps/india": "^2.0.0",
+    "@tailwindcss/container-queries": "^0.1.1",
+    "@upstash/redis": "^1.38.0",
+    "@wllama/wllama": "^3.5.1",
+    "chart.js": "^4.5.1",
+    "googleapis": "^173.0.0",
+    "jsonrepair": "^3.14.1",
+    "katex": "^0.17.0",
+    "konva": "^9.3.16",
+    "lucide-react": "0.383.0",
+    "mathjs": "^15.2.0",
+    "motion": "^12.42.2",
+    "nanoid": "^5.1.16",
+    "next": "14.2.35",
+    "pdfjs-dist": "^6.1.200",
+    "pptxgenjs": "^4.0.1",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "react-konva": "^18.2.10",
+    "recharts": "^3.9.1",
+    "smiles-drawer": "^2.4.1",
+    "three": "^0.185.0"
+  },
+  "devDependencies": {
+    "@types/node": "20.14.10",
+    "@types/react": "18.3.3",
+    "@types/react-dom": "18.3.0",
+    "@types/three": "^0.185.0",
+    "autoprefixer": "10.4.19",
+    "postcss": "8.4.39",
+    "tailwindcss": "3.4.6",
+    "typescript": "5.5.4"
+  }
+}

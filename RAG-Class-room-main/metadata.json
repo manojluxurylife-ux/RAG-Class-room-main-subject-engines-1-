@@ -1,0 +1,6 @@
+{
+  "name": "AI Guru",
+  "description": "An AI-powered learning environment.",
+  "requestFramePermissions": ["camera", "microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

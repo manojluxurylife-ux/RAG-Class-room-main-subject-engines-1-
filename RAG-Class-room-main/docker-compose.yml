@@ -1,0 +1,12 @@
+services:
+  ai-guru:
+    build: .
+    ports: ["3000:3000"]
+    env_file: [.env.local]
+    environment:
+      RAG_DATA_DIR: /app/data
+    volumes:
+      - ai_guru_rag:/app/data
+    restart: unless-stopped
+volumes:
+  ai_guru_rag:

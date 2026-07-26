@@ -1,0 +1,5 @@
+fastapi
+uvicorn[standard]
+pydantic
+Pillow
+pix2text>=1.1.3
