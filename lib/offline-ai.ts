@@ -175,7 +175,7 @@ export const offlineAI = {
       return wllama;
     };
 
-    loadPromise = (async () => {
+    const attemptsPromise = (async () => {
       try {
         return await attemptLoad(99999); // wllama's own default — WebGPU if available
       } catch (firstError) {
@@ -199,6 +199,32 @@ export const offlineAI = {
         }
       }
     })();
+
+    // A HANG is different from a THROW, and the retry logic above only
+    // helps with the latter — if attemptLoad() just never settles
+    // (neither resolves nor rejects; seen on some devices where the
+    // WASM/WebGPU initialization itself stalls rather than erroring),
+    // the UI would sit at "100%" forever with zero feedback, which is
+    // exactly what this whole fix is for. This bounds the ENTIRE
+    // process (both attempts combined) to a generous but finite window
+    // — long enough for a genuinely slow download/load on weak
+    // hardware or a slow connection, short enough that a student is
+    // never left staring at a stalled progress bar with no path
+    // forward. A timeout always resolves to a clear, retry-able error.
+    const DOWNLOAD_TIMEOUT_MS = 6 * 60 * 1000;
+    loadPromise = new Promise<Wllama>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        reject(new Error(
+          downloadFinished
+            ? "Loading the model into memory is taking much longer than expected — your device may be low on free RAM. Try closing other apps/browser tabs, then try again."
+            : "The download is taking much longer than expected — check your connection and try again."
+        ));
+      }, DOWNLOAD_TIMEOUT_MS);
+      attemptsPromise.then(
+        (w) => { clearTimeout(timer); resolve(w); },
+        (e) => { clearTimeout(timer); reject(e); },
+      );
+    });
 
     try {
       wllamaInstance = await loadPromise;
@@ -295,7 +321,7 @@ export const offlineAI = {
 
     localStorage.setItem(VISION_STATUS_KEY, "downloading");
 
-    visionLoadPromise = (async () => {
+    const attemptPromise = (async () => {
       const modelManager = new ModelManager({ parallelDownloads: 6, allowOffline: true });
       const source = await getHFModelSource({ repo: HF_REPO, file: HF_FILE, mmprojFile: HF_MMPROJ_FILE });
       const model = await modelManager.downloadModel(source, {
@@ -314,6 +340,19 @@ export const offlineAI = {
       }
       return wllama;
     })();
+
+    // Same reasoning as download() above — a hung load (neither
+    // resolving nor rejecting) would otherwise leave the UI stuck at
+    // 100% indefinitely with no feedback at all.
+    visionLoadPromise = new Promise<Wllama>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        reject(new Error("Loading the offline camera model is taking much longer than expected — your device may be low on free RAM. Try closing other apps/browser tabs, then try again."));
+      }, 6 * 60 * 1000);
+      attemptPromise.then(
+        (w) => { clearTimeout(timer); resolve(w); },
+        (e) => { clearTimeout(timer); reject(e); },
+      );
+    });
 
     try {
       visionWllamaInstance = await visionLoadPromise;

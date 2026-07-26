@@ -605,21 +605,44 @@ export default function RagClassroom() {
       } catch { /* fall through to browser speech below */ }
     }
 
-    if (!("speechSynthesis" in window)) { setStatus("This browser has no speech voice. Continuing the visual lesson."); finishAfterMinDisplay(); return; }
-    // Instant after the first load — the voice list is cached module-wide,
-    // so scene changes no longer stall on the voiceschanged timeout.
-    const locale=getSpeechLang(narrationLanguage); const voices=await loadSpeechVoices();
-    const localVoice=selectFemaleVoice(voices,locale);
-    if (!localVoice) {
-      const langLabel = SUPPORTED_LANGUAGES.find(item=>item.id===narrationLanguage)?.label||narrationLanguage;
-      setStatus(`No ${langLabel} voice found on this device — teaching silently with the whiteboard and text. Install a ${langLabel} voice in your phone's Settings → Language → Text-to-speech for narration.`);
-      finishAfterMinDisplay(); return;
+    // WHY THE TRY/CATCH BELOW: everything from here down used to have
+    // no error handling at all. Every single teaching step in the
+    // whole class — every paragraph read, every explanation, the
+    // combined explain-while-write pass — funnels through this one
+    // function, chained via onComplete callbacks rather than a loop a
+    // student could nudge forward again. If ANYTHING in this fallback
+    // path threw (loadSpeechVoices() rejecting, speakChunked() hitting
+    // one of the various known Android/Chrome speechSynthesis quirks,
+    // literally any unexpected error) — finish() never got called,
+    // onComplete never fired, and the ENTIRE REST OF THE CLASS silently
+    // froze with no error shown and no way to recover except pausing
+    // and restarting from a different point. This is very likely what
+    // "breaking occasionally" actually was: not a total failure, but
+    // one single narration step out of dozens per lesson hitting a
+    // rare error with nothing catching it. Now, whatever goes wrong
+    // here, the class still moves on to the next step instead of
+    // stopping dead.
+    try {
+      if (!("speechSynthesis" in window)) { setStatus("This browser has no speech voice. Continuing the visual lesson."); finishAfterMinDisplay(); return; }
+      // Instant after the first load — the voice list is cached module-wide,
+      // so scene changes no longer stall on the voiceschanged timeout.
+      const locale=getSpeechLang(narrationLanguage); const voices=await loadSpeechVoices();
+      const localVoice=selectFemaleVoice(voices,locale);
+      if (!localVoice) {
+        const langLabel = SUPPORTED_LANGUAGES.find(item=>item.id===narrationLanguage)?.label||narrationLanguage;
+        setStatus(`No ${langLabel} voice found on this device — teaching silently with the whiteboard and text. Install a ${langLabel} voice in your phone's Settings → Language → Text-to-speech for narration.`);
+        finishAfterMinDisplay(); return;
+      }
+      // Chunked speech: the short first sentence starts almost instantly,
+      // remaining chunks chain seamlessly; also sidesteps Chrome's known
+      // long-utterance stall. The watchdog stays as the last safety net.
+      watchdog=window.setTimeout(finish,Math.min(180000,Math.max(15000,(text.length*90)/Math.max(teachingSpeed,0.5))));
+      chunkedSpeechRef.current = speakChunked({ text, locale, voice: localVoice, rate: teachingSpeed, onDone: finish });
+    } catch (e) {
+      console.error("[narrate] unexpected error in the speech fallback path — continuing the class regardless:", e);
+      setStatus("A voice hiccup on this step — continuing the lesson.");
+      finishAfterMinDisplay();
     }
-    // Chunked speech: the short first sentence starts almost instantly,
-    // remaining chunks chain seamlessly; also sidesteps Chrome's known
-    // long-utterance stall. The watchdog stays as the last safety net.
-    watchdog=window.setTimeout(finish,Math.min(180000,Math.max(15000,(text.length*90)/Math.max(teachingSpeed,0.5))));
-    chunkedSpeechRef.current = speakChunked({ text, locale, voice: localVoice, rate: teachingSpeed, onDone: finish });
   }
   async function continueClassFromNextPage(activeLesson:any,runId:number){
     if(playbackRunRef.current!==runId)return;
@@ -699,7 +722,26 @@ export default function RagClassroom() {
         }
         setStatus(`Explaining ${active.title} while writing it on the whiteboard.`);
         setSpeaking(true);
-        boardCompleteRef.current = () => { if(playbackRunRef.current!==runId)return; setSpeaking(false); setBoardPlaying(false); afterBoard(); };
+        // Same reasoning as narrate()'s fix above: this whole step
+        // depends on WhiteboardCommandEngine's onComplete callback
+        // actually firing (see the JSX below), with nothing else
+        // driving it forward. If the board's own animation loop ever
+        // gets stuck — a malformed AI-generated command, an unexpected
+        // internal error — this would otherwise wait forever with the
+        // class just silently stopped on this scene. A bounded timeout
+        // guarantees the class always moves on eventually, exactly
+        // like every other step in this file now does.
+        let boardDone = false;
+        const finishBoard = () => {
+          if (boardDone || playbackRunRef.current!==runId) return;
+          boardDone = true;
+          setSpeaking(false); setBoardPlaying(false); afterBoard();
+        };
+        const boardWatchdog = window.setTimeout(() => {
+          console.error("[explainWhileWriting] whiteboard never signalled completion — continuing the class regardless");
+          finishBoard();
+        }, 3 * 60 * 1000);
+        boardCompleteRef.current = () => { window.clearTimeout(boardWatchdog); finishBoard(); };
         setBoardPlaying(true);
       };
       if(active.paragraphUnits && active.paragraphUnits.length>0){

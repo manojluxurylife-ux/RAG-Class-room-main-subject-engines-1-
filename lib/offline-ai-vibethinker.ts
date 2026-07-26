@@ -128,7 +128,7 @@ export const offlineVibeThinker = {
       return wllama;
     };
 
-    loadPromise = (async () => {
+    const attemptsPromise = (async () => {
       try {
         return await attemptLoad(99999); // wllama's own default — WebGPU if available
       } catch (firstError) {
@@ -147,6 +147,27 @@ export const offlineVibeThinker = {
         }
       }
     })();
+
+    // Same reasoning as lib/offline-ai.ts's download() — a hung load
+    // (neither resolving nor rejecting) would otherwise leave the UI
+    // stuck at 100% indefinitely. Given this model is ~3.5x bigger than
+    // Qwen3.5, a slow/hung load is if anything MORE likely here, so
+    // this safeguard matters at least as much. A longer ceiling than
+    // Qwen3.5's (8 vs 6 minutes) to allow for the larger file on a slow
+    // connection before treating it as failed.
+    loadPromise = new Promise<Wllama>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        reject(new Error(
+          downloadFinished
+            ? "Loading VibeThinker-3B into memory is taking much longer than expected — your device may be low on free RAM (this is a 1.93GB model). Try closing other apps/browser tabs, then try again."
+            : "The download is taking much longer than expected — check your connection and try again."
+        ));
+      }, 8 * 60 * 1000);
+      attemptsPromise.then(
+        (w) => { clearTimeout(timer); resolve(w); },
+        (e) => { clearTimeout(timer); reject(e); },
+      );
+    });
 
     try {
       wllamaInstance = await loadPromise;

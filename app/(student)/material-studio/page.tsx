@@ -133,6 +133,19 @@ export default function MaterialStudio(){
   // is what "create all materials at the same time" actually means here:
   // every group's 5-part pipeline runs concurrently with every other
   // group's, while each individual pipeline stays correctly ordered.
+  // Google's own error text ("...denied access. Please contact
+  // support.") is a dead end for a student — they can't literally
+  // contact Google support. This appends a concrete next step instead
+  // of showing that raw text alone, for the error shapes that mean
+  // "this key won't work right now, but the batch/retry system can
+  // route around it" rather than "your input was invalid."
+  function friendlyBatchError(raw: string): string {
+    const looksLikeKeyIssue = /denied access|quota|exceeded|permission|rate limit|429/i.test(raw);
+    return looksLikeKeyIssue
+      ? `${raw} This is a Gemini account issue, not something in your textbook — try "Retry failed materials only" below in a bit, or add another key in Settings if you have one.`
+      : raw;
+  }
+
   async function runGroup(group:(typeof BATCH_MATERIALS[number])[]){
    for(let part=1;part<=5;part++){
     const activeGroup=group.filter(([id])=>!failed.has(id));if(!activeGroup.length)return;
@@ -169,18 +182,29 @@ export default function MaterialStudio(){
         material,materialType,topic:detectedTopic,documentId:activeDocumentId,
         onFallbackStarting:()=>setBatchStatus(current=>({...current,[materialType]:{state:"running",message:"Device storage is full — asking permission to save to your Google Drive…"}})),
       });
-      if(saveOutcome.savedTo==="failed"){failed.set(materialType,saveOutcome.error);setBatchStatus(current=>({...current,[materialType]:{state:"error",message:`Failed at part ${part}/5 · ${saveOutcome.error}`}}));continue;}
+      if(saveOutcome.savedTo==="failed"){failed.set(materialType,saveOutcome.error);setBatchStatus(current=>({...current,[materialType]:{state:"error",message:`Failed at part ${part}/5 · ${friendlyBatchError(saveOutcome.error)}`}}));continue;}
       if(saveOutcome.savedTo==="drive")savedToDrive.add(materialType);
       setBatchStatus(current=>({...current,[materialType]:{state:part===5?"complete":"running",message:part===5?(saveOutcome.savedTo==="drive"?"Created · saved to Google Drive (device storage was full)":"Created · all 5 parts stored"):`Part ${part}/5 stored${saveOutcome.savedTo==="drive"?" to Google Drive":""} · waiting for part ${part+1}`}}));
      }
-    }catch(error:any){const message=error.message||`Part ${part} failed`;activeGroup.forEach(([id])=>{failed.set(id,message);setBatchStatus(current=>({...current,[id]:{state:"error",message:`Failed at part ${part}/5 · ${message}`}}));});return;}
+    }catch(error:any){const message=error.message||`Part ${part} failed`;activeGroup.forEach(([id])=>{failed.set(id,message);setBatchStatus(current=>({...current,[id]:{state:"error",message:`Failed at part ${part}/5 · ${friendlyBatchError(message)}`}}));});return;}
    }
   }
   // Concurrency = the number of groups (at most 5: ppt, mcq, flashcards,
   // and two "other materials" halves) — every group runs at the same
   // time, exactly as requested. runWithConcurrency still caps this
   // safely in case a future change ever produces more groups than that.
-  await runWithConcurrency({tasks:groups.map(group=>()=>runGroup(group)),concurrency:groups.length||1});
+  // WAS concurrency: groups.length — which equals the total number of
+  // groups, so every group fired at once regardless of this setting,
+  // completely defeating the point of runWithConcurrency (see its own
+  // comment: a burst of simultaneous BYOK Gemini calls risks tripping
+  // the student's key's rate limit). This is very likely why most
+  // materials were failing with "denied access" while one or two
+  // happened to race ahead and succeed — 5 simultaneous calls against
+  // a single free-tier key is exactly the burst that trips a per-
+  // minute limit. Capped at 2 in-flight groups at a time instead —
+  // still meaningfully faster than fully sequential, without firing
+  // the whole batch as one burst.
+  await runWithConcurrency({tasks:groups.map(group=>()=>runGroup(group)),concurrency:Math.min(2,groups.length||1)});
    const previouslyComplete=retryOnly?BATCH_MATERIALS.filter(([id])=>batchStatus[id]?.state==="complete").length:0;
    const completed=previouslyComplete+materialsToRun.filter(([id])=>!failed.has(id)&&accumulated[id]?.processedParts===5).length;
   const driveNote=savedToDrive.size?` ${savedToDrive.size} material${savedToDrive.size>1?"s were":" was"} saved to your Google Drive instead of this device (storage was full) — ${savedToDrive.size>1?"these need":"this needs"} an internet connection to open, unlike materials saved on the device.`:"";

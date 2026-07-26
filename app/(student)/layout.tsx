@@ -30,7 +30,17 @@ export default function StudentLayout({ children }: { children: ReactNode }) {
 
         </div>
       </div>
-      <div className="mx-auto max-w-[1600px] px-4 py-6">
+      {/* pb-40 (not the original py-6's plain bottom padding) —
+          GlobalDoubtDock below is `position: fixed` near the bottom of
+          the viewport with a solid background and z-[1000], so on any
+          page with enough content to actually reach the bottom of the
+          screen, the last bit of that content was rendering directly
+          underneath it — visually hidden, easy to mistake for having
+          disappeared entirely (this is what was happening to Material
+          Studio's amber "Create all materials again" button and the
+          material cards near it). This clears space for the dock on
+          every student page instead of patching each one individually. */}
+      <div className="mx-auto max-w-[1600px] px-4 pt-6 pb-40">
       <SubscriptionNotice />
       {children}
       </div>

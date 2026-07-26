@@ -229,7 +229,7 @@ export default function StudentSettingsPage() {
             <p className="text-xs text-chalkdim leading-relaxed flex-grow">
               Backup AI for when you're offline.
             </p>
-            <div className="text-marigold text-xs font-mono cursor-pointer" onClick={downloadBrain2}>Download MiniCPM →</div>
+            <div className="text-marigold text-xs font-mono cursor-pointer" onClick={downloadBrain2}>Download Qwen3.5 →</div>
           </Card>
 
           <Card className="h-full flex flex-col">
