@@ -2,7 +2,7 @@
  * Generated study materials themselves live in IndexedDB (lib/offline-materials.ts).
  * This worker keeps the application shell and already-used JS/CSS/image assets available.
  */
-const VERSION = "v1785052814445";
+const VERSION = "v1785063563953";
 const SHELL_CACHE = `gg-shell-${VERSION}`;
 const RUNTIME_CACHE = `gg-runtime-${VERSION}`;
 const SHELL_ASSETS = [

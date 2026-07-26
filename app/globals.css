@@ -17,10 +17,21 @@ body {
 ::selection { background: #e8a33d; color: #16241d; }
 
 /* ── Floating hardware dock — positioning copied from the reference app
-   (Nexus Justice) inline <style>. One difference, deliberate: the
-   reference offsets the dock left by 88px on sm+ screens to compensate
-   for its fixed left sidebar; this app's layout is a centered column
-   with no sidebar, so the dock stays truly centered at all widths. ── */
+   (Nexus Justice) inline <style>, then adjusted: the reference offsets
+   the dock left by 88px on sm+ screens to compensate for its fixed
+   left sidebar; this app's layout is a centered column with no
+   sidebar, so centering seemed like the natural equivalent at first.
+   In practice centered-bottom turned out to be exactly where page
+   action buttons/headers tend to sit too — this is what was
+   repeatedly hiding buttons underneath the dock (Material Studio's
+   "Create all materials again", reported more than once). Moved to
+   bottom-right on desktop/tablet instead — the standard, much safer
+   position for a persistent floating widget, since almost no page
+   layout puts its primary actions in that specific corner. Mobile
+   keeps the original centered, near-full-width bar (see the
+   component's own w-[calc(100%-80px)] sizing) — centering a wide bar
+   is still the right call there; only larger screens change, where
+   the component already renders as a compact, non-full-width bar. ── */
 .hardware-dock-center {
   position: fixed;
   bottom: 24px;
@@ -29,7 +40,10 @@ body {
 }
 @media (min-width: 768px) {
   .hardware-dock-center {
-    bottom: 40px;
+    bottom: 24px;
+    left: auto;
+    right: 24px;
+    transform: none;
   }
 }
 
@@ -37,12 +51,6 @@ body {
 .custom-scrollbar::-webkit-scrollbar { width: 5px; }
 .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
 .custom-scrollbar::-webkit-scrollbar-thumb { background: #312e81; border-radius: 10px; }
-
-/* AI Guru Final Layout: on classroom-width screens the draggable camera/mic
-   starts below the AI Teacher Notes pane. A student drag overrides this. */
-@media (min-width: 1280px) {
-  .hardware-dock-center { left: 49%; bottom: 28px; }
-}
 
 /* Creation actions must remain visually discoverable while a PDF is being
    indexed. They stay disabled until indexing finishes, but never fade into

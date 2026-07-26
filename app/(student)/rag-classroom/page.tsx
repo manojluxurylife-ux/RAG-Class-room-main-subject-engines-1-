@@ -3,7 +3,7 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
 import {
-  Upload, Play, Pause, ChevronLeft, ChevronRight, Send, Layers,
+  Upload, Play, Pause, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Square, Send, Layers,
   HelpCircle, MessageCircleQuestion, MousePointer2, Pencil, Highlighter,
   Eraser, Undo2, Redo2, Trash2, Type, Shapes, ZoomIn, ZoomOut, Bookmark,
   Bell, Moon, Sun, Globe, LogOut, StickyNote, Presentation, Map as MapIcon,
@@ -100,7 +100,7 @@ export default function RagClassroom() {
   // starts if the teaching language has no voice on this device, so
   // the student knows upfront why narration will be silent instead of
   // discovering it scene-by-scene mid-class with no clear explanation.
-  const [voiceWarning, setVoiceWarning] = useState<string | null>(null);
+  const [voiceWarning, setVoiceWarning] = useState<{ message: string; installUrl: string } | null>(null);
   const [topic, setTopic] = useState("");
   const [lesson, setLesson] = useState<any>(null);
 
@@ -487,6 +487,9 @@ export default function RagClassroom() {
   // cleanly (see below) without touching an unrelated in-flight
   // narrate() call, and vice versa.
   const boardLineSourceRef = useRef<AudioBufferSourceNode | null>(null);
+  // Timestamp of the last time a NEW (not cache-hit) Gemini TTS call
+  // was actually made for a whiteboard line — see the throttle below.
+  const lastGeminiBoardCallRef = useRef(0);
   // Holds "what to do once the whiteboard finishes playing its current
   // scene's commands" — set right before starting a combined explain-
   // while-write pass (see playSceneAt below) and read by the
@@ -495,25 +498,61 @@ export default function RagClassroom() {
   const boardCompleteRef = useRef<() => void>(() => {});
 
   /** Speaks ONE whiteboard line while it's being written — the
-   *  "explain while writing" behaviour, replacing the old design where
-   *  a whole paragraph's explanation played as one flat block, fully
-   *  separate from a differently-timed whiteboard animation. Stops
-   *  whatever board line was still playing first, since the engine
-   *  advances to the next command on its own visual clock rather than
-   *  waiting for speech to finish — an overrunning line's audio should
-   *  cut off cleanly for the next one rather than overlap it. Falls
-   *  back to browser speech the same way narrate() does if Gemini
-   *  fails for any reason (no key, network, quota) — the board never
-   *  goes fully silent just because a line's TTS call didn't work. */
+   *  "explain while writing" behaviour. Stops whatever board line was
+   *  still playing first, since the engine advances to the next
+   *  command on its own visual clock rather than waiting for speech to
+   *  finish — an overrunning line's audio should cut off cleanly for
+   *  the next one rather than overlap it.
+   *
+   *  PRIORITY ORDER — deliberately free-voice-first, Gemini as a
+   *  fallback, not the other way around like narrate() above. That's
+   *  the right call HERE specifically (not for narrate()'s single
+   *  block-level Gemini call) because this fires once per whiteboard
+   *  LINE — a page with many lines means many separate API calls if
+   *  Gemini goes first, which is exactly what was risking rate limits
+   *  and "breaking the class" during Malayalam explanation. Trying the
+   *  free browser voice first (for BOTH English and Malayalam, not
+   *  just English) means the common case costs zero API calls and can
+   *  never be rate-limited at all — Gemini's better-but-costly voice
+   *  only gets used as a safety net on devices with no browser voice
+   *  for that language whatsoever. */
   async function speakBoardLine(text: string, language: string) {
     if (!text.trim()) return;
     if (boardLineSourceRef.current) { try { boardLineSourceRef.current.onended = null; boardLineSourceRef.current.stop(); } catch {} boardLineSourceRef.current = null; }
+    const locale = getSpeechLang(language);
+
+    // ── Path 1: free browser voice (default) ──
+    try {
+      if ("speechSynthesis" in window) {
+        const voices = await loadSpeechVoices();
+        const voice = selectFemaleVoice(voices, locale);
+        if (voice) {
+          window.speechSynthesis.speak(Object.assign(new SpeechSynthesisUtterance(text), { voice, lang: locale }));
+          return;
+        }
+        // No voice for this language at all on this device — fall
+        // through to Gemini below rather than teach this line silently.
+      }
+    } catch {
+      // An actual error trying the browser path (not just "no voice") —
+      // still fall through to Gemini rather than give up on this line.
+    }
+
+    // ── Path 2: Gemini TTS (fallback only — no browser voice available) ──
     try {
       const cacheKey = hashCacheKey(text, GEMINI_TEACHER_VOICE);
       let pcmBytes: Uint8Array | null = null;
       try { pcmBytes = await getCachedTtsAudio(cacheKey); } catch {}
       if (!pcmBytes) {
-        const { data } = await callGeminiTtsClient(text, getSpeechLang(language));
+        // Still throttled even as a fallback — a device with NO
+        // browser voice for this language will hit this path for
+        // EVERY line on the page, which is still a burst risk without
+        // this guard, just a less common one now than before.
+        const MIN_GEMINI_GAP_MS = 2500;
+        const sinceLastCall = Date.now() - lastGeminiBoardCallRef.current;
+        if (sinceLastCall < MIN_GEMINI_GAP_MS) return; // stay silent for this one line rather than risk a rate-limit burst
+        lastGeminiBoardCallRef.current = Date.now();
+        const { data } = await callGeminiTtsClient(text, locale);
         pcmBytes = decodeBytes(data);
         void setCachedTtsAudio(cacheKey, pcmBytes).catch(() => {});
       }
@@ -529,16 +568,9 @@ export default function RagClassroom() {
       source.onended = () => { if (boardLineSourceRef.current === source) boardLineSourceRef.current = null; };
       source.start();
     } catch {
-      // Gemini unavailable for this line — browser speech, fire-and-
-      // forget, same voice-selection helpers narrate() uses.
-      if (!("speechSynthesis" in window)) return;
-      try {
-        const locale = getSpeechLang(language);
-        const voices = await loadSpeechVoices();
-        const voice = selectFemaleVoice(voices, locale);
-        if (!voice) return;
-        window.speechSynthesis.speak(Object.assign(new SpeechSynthesisUtterance(text), { voice, lang: locale }));
-      } catch {}
+      // Both paths failed — this one line stays silent, but the
+      // whiteboard's own pacing clock (unaffected by any of this)
+      // carries on to the next line regardless.
     }
   }
 
@@ -630,7 +662,7 @@ export default function RagClassroom() {
       const localVoice=selectFemaleVoice(voices,locale);
       if (!localVoice) {
         const langLabel = SUPPORTED_LANGUAGES.find(item=>item.id===narrationLanguage)?.label||narrationLanguage;
-        setStatus(`No ${langLabel} voice found on this device — teaching silently with the whiteboard and text. Install a ${langLabel} voice in your phone's Settings → Language → Text-to-speech for narration.`);
+        setStatus(`No ${langLabel} voice found on this device — teaching silently with the whiteboard and text. The free "Google Text-to-Speech" app (Play Store) usually adds this voice.`);
         finishAfterMinDisplay(); return;
       }
       // Chunked speech: the short first sentence starts almost instantly,
@@ -753,7 +785,26 @@ export default function RagClassroom() {
         const units=active.paragraphUnits;
         const readSource=(unitIndex:number)=>{
           if(playbackRunRef.current!==runId)return;
-          if(unitIndex>=units.length){explainWhileWriting(advance);return;}
+          if(unitIndex>=units.length){
+            // WHY THIS LINE: previously activeUnitIndex just stayed at
+            // its last value (units.length-1, the final paragraph)
+            // through the entire explain-while-write phase — there was
+            // no signal anywhere that all paragraphs were already done.
+            // If the class broke DURING the Malayalam explanation and
+            // the student clicked Resume, speak() below resumes from
+            // activeUnitIndex — which still pointed at "the last
+            // paragraph," so it re-read that paragraph's source text
+            // from the PDF again before ever getting back to
+            // explaining, instead of returning straight to the
+            // explanation that had actually broken. Setting it to
+            // units.length here (one past the last real paragraph)
+            // makes this check on the next line true immediately on
+            // resume, going straight back into explainWhileWriting
+            // instead of through readSource at all.
+            setActiveUnitIndex(units.length);
+            explainWhileWriting(advance);
+            return;
+          }
           setActiveUnitIndex(unitIndex);
           const unit=units[unitIndex];
           const afterThisSource=()=>readSource(unitIndex+1);
@@ -803,7 +854,19 @@ export default function RagClassroom() {
     // rather have narration.
     const voiceOk = await hasVoiceFor(teachingLanguage);
     const langLabel = SUPPORTED_LANGUAGES.find(item => item.id === teachingLanguage)?.label || teachingLanguage;
-    setVoiceWarning(voiceOk ? null : `No ${langLabel} voice was found on this device. The class will still teach using the whiteboard and on-screen text, but without spoken narration. Install a ${langLabel} voice in your phone's Settings \u2192 Language \u2192 Text-to-speech, or switch the teaching language below.`);
+    // WHY NAME THE SPECIFIC APP: "check your phone's Settings" was
+    // technically correct but vague — most budget Android phones ship
+    // WITHOUT a Malayalam (or Tamil/Kannada/Telugu/...) voice pack
+    // pre-installed, but the fix is almost always the same free app:
+    // Google's own "Google Text-to-Speech" (com.google.android.tts),
+    // available via Play Store on virtually any Android device
+    // regardless of what shipped pre-installed. Naming it directly,
+    // with a real link, is a concrete action instead of a scavenger
+    // hunt through nested settings menus a student may not find.
+    setVoiceWarning(voiceOk ? null : {
+      message: `No ${langLabel} voice was found on this device. The class will still teach using the whiteboard and on-screen text, but without spoken narration.`,
+      installUrl: "https://play.google.com/store/apps/details?id=com.google.android.tts",
+    });
     setClassStarted(true);
     if (lesson?.scenes?.length) { const runId=++playbackRunRef.current;playSceneAt(scene,lesson,runId); }
     else await createLesson(true);
@@ -1093,30 +1156,92 @@ export default function RagClassroom() {
                 <option value="print">Print</option>
               </select>
             </label>
-            <button onClick={startClass} disabled={!doc || busy || speaking} className="flex items-center gap-1.5 rounded-lg bg-emerald-500 px-3 py-1.5 text-xs font-bold text-white hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-50">
-              <Play size={13} /> {speaking ? "Teaching…" : classStarted ? "Resume Class" : "Start Class"}
-            </button>
-            {/* Pause — stays IN the classroom (unlike End Class below), so a
-                student can interrupt to ask a doubt via the camera/mic pane
-                and pick up exactly where they left off with "Resume Class"
-                above. Reuses pauseTeaching() as-is: it already stops
-                narration/whiteboard without touching scene position or
-                navigating anywhere. Previously the only way to do this was
-                a small unlabeled icon button inside one specific tab — easy
-                to miss, especially next to the much more prominent,
-                exit-styled "End Class" button. */}
-            <button onClick={pauseTeaching} disabled={!speaking} title="Stop the AI teacher here so you can ask a doubt — resume anytime with Resume Class" className="flex items-center gap-1.5 rounded-lg border border-amber/50 bg-amber/10 px-3 py-1.5 text-xs font-semibold text-amber hover:bg-amber/20 disabled:cursor-not-allowed disabled:opacity-40">
-              <Pause size={13} /> Pause
-            </button>
-            <button onClick={endClass} className="flex items-center gap-1.5 rounded-lg border border-rose-500/40 bg-rose-500/10 px-3 py-1.5 text-xs font-semibold text-rose-300 hover:bg-rose-500/20">
-              <LogOut size={13} /> {t(uiLanguage, "endClass")}
-            </button>
+          </div>
+        </div>
+
+        {/* ── Transport controls — one consolidated bar instead of the
+            previous Start/Pause/End buttons living in the cramped
+            settings toolbar, PLUS a second play/pause icon buried in
+            the AI Notes panel, PLUS a third in the Whiteboard panel.
+            Three different places to control the same one class was
+            exactly what read as unpolished — this is a single,
+            deliberate control surface, styled like a real transport
+            deck (REW / PLAY / PAUSE / STOP / FWD), sitting directly
+            above the panel row so it reads as "this is how you drive
+            the class" before the eye even reaches the boards below. ── */}
+        <div className="mx-4 mt-3 flex flex-wrap items-center justify-between gap-4 rounded-3xl border border-board3 bg-board2/80 px-6 py-4 shadow-xl">
+          <div className="rounded-xl border border-board3 bg-board px-4 py-2">
+            <p className="font-mono text-[10px] uppercase tracking-[.2em] text-chalkdim">Status</p>
+            <p className="font-display text-lg text-chalk">{speaking ? "Playing" : classStarted ? "Paused" : "Stopped"}</p>
+          </div>
+
+          <div className="flex items-center gap-5 sm:gap-7">
+            {([
+              { key: "rew", label: "Rew", icon: <ChevronsLeft size={18} />, active: false,
+                onClick: () => goScene(Math.max(0, scene - 1)), disabled: !classStarted || scene === 0 },
+              { key: "pause", label: "Pause", icon: <Pause size={18} />, active: classStarted && !speaking,
+                onClick: pauseTeaching, disabled: !speaking },
+              { key: "stop", label: "Stop", icon: <Square size={16} fill="currentColor" />, active: !classStarted,
+                onClick: endClass, disabled: false },
+              { key: "fwd", label: "Fwd", icon: <ChevronsRight size={18} />, active: false,
+                onClick: () => goScene(Math.min((lesson?.scenes?.length || 1) - 1, scene + 1)), disabled: !classStarted || scene >= (lesson?.scenes?.length || 1) - 1 },
+            ] as const).map((btn, i) => i === 1 ? (
+              <div key="play-pause-group" className="contents">
+                {/* PLAY sits before Pause, largest and centered, same as
+                    a real transport deck — Start/Resume Class collapse
+                    into this one button, contextually. */}
+                <div className="flex flex-col items-center gap-1.5">
+                  <span className={`h-1.5 w-1.5 rounded-full transition-colors ${speaking ? "bg-amber" : "bg-board3"}`} />
+                  <button onClick={startClass} disabled={!doc || busy || speaking}
+                    title={classStarted ? "Resume Class" : "Start Class"}
+                    className="flex h-16 w-16 items-center justify-center rounded-full bg-amber text-board shadow-lg transition-transform hover:scale-105 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:scale-100">
+                    <Play size={26} fill="currentColor" />
+                  </button>
+                  <span className="font-mono text-[10px] uppercase tracking-wider text-chalkdim">Play</span>
+                </div>
+                <div className="flex flex-col items-center gap-1.5">
+                  <span className={`h-1.5 w-1.5 rounded-full transition-colors ${btn.active ? "bg-amber" : "bg-board3"}`} />
+                  <button onClick={btn.onClick} disabled={btn.disabled} title="Pause — resume anytime with Play"
+                    className="flex h-11 w-11 items-center justify-center rounded-xl border border-board3 bg-board text-chalk transition-colors hover:border-amber/50 disabled:cursor-not-allowed disabled:opacity-30">
+                    {btn.icon}
+                  </button>
+                  <span className="font-mono text-[10px] uppercase tracking-wider text-chalkdim">{btn.label}</span>
+                </div>
+              </div>
+            ) : i === 0 ? (
+              <div key={btn.key} className="flex flex-col items-center gap-1.5">
+                <span className={`h-1.5 w-1.5 rounded-full transition-colors ${btn.active ? "bg-amber" : "bg-board3"}`} />
+                <button onClick={btn.onClick} disabled={btn.disabled} title="Previous scene"
+                  className="flex h-11 w-11 items-center justify-center rounded-xl border border-board3 bg-board text-chalk transition-colors hover:border-amber/50 disabled:cursor-not-allowed disabled:opacity-30">
+                  {btn.icon}
+                </button>
+                <span className="font-mono text-[10px] uppercase tracking-wider text-chalkdim">{btn.label}</span>
+              </div>
+            ) : (
+              <div key={btn.key} className="flex flex-col items-center gap-1.5">
+                <span className={`h-1.5 w-1.5 rounded-full transition-colors ${btn.active ? "bg-amber" : "bg-board3"}`} />
+                <button onClick={btn.onClick} disabled={btn.disabled} title={btn.key === "stop" ? t(uiLanguage, "endClass") : "Next scene"}
+                  className={`flex h-11 w-11 items-center justify-center rounded-xl border transition-colors disabled:cursor-not-allowed disabled:opacity-30 ${btn.key === "stop" ? "border-rose-500/40 bg-rose-500/10 text-rose-300 hover:bg-rose-500/20" : "border-board3 bg-board text-chalk hover:border-amber/50"}`}>
+                  {btn.icon}
+                </button>
+                <span className="font-mono text-[10px] uppercase tracking-wider text-chalkdim">{btn.label}</span>
+              </div>
+            ))}
+          </div>
+
+          <div className="rounded-xl border border-board3 bg-board px-4 py-2 text-right">
+            <p className="font-mono text-[10px] uppercase tracking-[.2em] text-chalkdim">Mode</p>
+            <p className="font-display text-lg text-chalk">{teachingStyle === "target_with_english_terms" ? "Concept+Ex" : teachingStyle === "simple_english" ? "Simple Eng" : "Target Only"}</p>
           </div>
         </div>
 
         {voiceWarning && (
           <div className="mx-4 mt-3 flex items-start gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
-            <span className="flex-1">{voiceWarning}</span>
+            <span className="flex-1">{voiceWarning.message}</span>
+            <a href={voiceWarning.installUrl} target="_blank" rel="noopener noreferrer"
+              className="shrink-0 whitespace-nowrap rounded-md border border-amber-400/50 bg-amber-500/20 px-2 py-1 font-semibold text-amber-100 hover:bg-amber-500/30">
+              Install free voice
+            </a>
             <button onClick={() => setVoiceWarning(null)} className="shrink-0 rounded-md px-1.5 py-0.5 text-amber-200/70 hover:bg-amber-500/20 hover:text-amber-200" aria-label="Dismiss">✕</button>
           </div>
         )}
@@ -1246,7 +1371,6 @@ export default function RagClassroom() {
                     {s ? <>
                       <div className="mb-3 flex items-center justify-between">
                         <div className="flex flex-wrap items-center gap-2"><span className="rounded-full bg-indigo-500/20 px-3 py-1 text-xs font-semibold text-indigo-200">AI Teacher ({SUPPORTED_LANGUAGES.find(l => l.id === teachingLanguage)?.label || teachingLanguage})</span><span className="rounded-full bg-emerald-500/15 px-2.5 py-1 text-[10px] font-bold text-emerald-300">Synced to textbook page {s.sourcePage||pageNum}</span></div>
-                        <button onClick={() => speaking ? pauseTeaching() : speak()} className="rounded-full bg-amber p-2 text-board">{speaking ? <Pause size={16} /> : <Play size={16} />}</button>
                       </div>
                       <p className="mb-2 font-mono text-[10px] uppercase tracking-wide text-amber">{s.type}</p>
                       <h2 className="font-display text-xl text-chalk">{s.title}</h2>
